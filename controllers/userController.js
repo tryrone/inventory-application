@@ -2,7 +2,15 @@ const User = require("./../models/UsersModel");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+const OtpModel = require("./../models/OtpModel");
+
+const HTTPService = require("./../services/http");
+const { phoneNumberHasCountryCode } = require("../utils/authSanitizer");
+
 const jwtSecret = process.env.JWT_SECRET;
+const termiiApiKey = process.env.TERMI_API_KEY;
+const termiiBaseUrl = process.env.TERMI_BASE_URL;
+const { parsePhoneNumberFromString } = require("libphonenumber-js");
 
 // handle post requests at "api/users/signup"
 exports.createUser = (req, res) => {
@@ -14,11 +22,13 @@ exports.createUser = (req, res) => {
     firstName: req.body.firstName,
     lastName: req.body.lastName,
     email: req.body.email,
+    phoneNumber: req.body.phoneNumber,
     isAdmin: false,
     isSeller: false,
     isCustomer: true,
     isShipper: false,
-    isRestricted: false
+    isRestricted: false,
+    phoneNumberIsVerified: false,
   });
 
   // 1- Check is the username is taken
@@ -30,17 +40,20 @@ exports.createUser = (req, res) => {
   // 1- check if the Username is already taken
   // throw a message to the user if so
   function checkUsernameTaken() {
-    User.findOne({ username: req.body.username }, (err, userWithSameUsername) => {
-      if (err) {
-        return res.status(400).json({
-          message: "Error getting username"
-        });
-      } else if (userWithSameUsername) {
-        return res.status(400).json({ message: "Username is taken" });
-      } else {
-        checkEmailTaken();
+    User.findOne(
+      { username: req.body.username },
+      (err, userWithSameUsername) => {
+        if (err) {
+          return res.status(400).json({
+            message: "Error getting username",
+          });
+        } else if (userWithSameUsername) {
+          return res.status(400).json({ message: "Username is taken" });
+        } else {
+          checkEmailTaken();
+        }
       }
-    });
+    );
   }
   // 2- check if the email address is already taken
   // throw a message to the user if so
@@ -48,7 +61,7 @@ exports.createUser = (req, res) => {
     User.findOne({ email: req.body.email }, (err, userWithSameEmail) => {
       if (err) {
         res.status(400).json({
-          message: "Error getting email try gain"
+          message: "Error getting email try gain",
         });
       } else if (userWithSameEmail) {
         res.status(400).json({ message: "This email is taken" });
@@ -62,7 +75,7 @@ exports.createUser = (req, res) => {
   function verifyPassword() {
     if (req.body.password !== req.body.verifyPassword) {
       res.status(400).json({
-        message: "Passwords don't match"
+        message: "Passwords don't match",
       });
     } else {
       encryptDataAndSave();
@@ -71,32 +84,50 @@ exports.createUser = (req, res) => {
 
   // 4- encrypt the password using bcryptjs and save the new user with hashed pass
   const encryptDataAndSave = function () {
-    //create slat and hash
-    bcrypt.genSalt(10, (err, salt) => {
-      if (err) throw err;
+    const phoneNumber = req.body.phoneNumber; // or wherever the phone number is located in the request
+    const parsedPhoneNumber = parsePhoneNumberFromString(phoneNumber);
 
-      // hash the password along with our new salt
-      bcrypt.hash(newUser.password, salt, (err, hash) => {
+    if (parsedPhoneNumber && parsedPhoneNumber.country) {
+      //create slat and hash
+      bcrypt.genSalt(10, (err, salt) => {
         if (err) throw err;
 
-        // override the cleartext password in the user with the hashed one
-        newUser.password = hash;
+        // hash the password along with our new salt
+        bcrypt.hash(newUser.password, salt, async (err, hash) => {
+          if (err) throw err;
 
-        // if the email and the username are available, create a new user
-        // with the hashed password and save it
-        newUser
-          .save()
-          .then(user => {
-            generateNewToken(user);
-          })
-          .catch(err => {
-            res.status(400).json({
-              message: "Error registering",
-              err
-            });
-          });
+          // check if phone number is provided
+          OtpModel.findOne({ phone_number: req.body.phoneNumber }).then(
+            (otp) => {
+              if (otp && otp.isVerified) {
+                newUser.phoneNumberIsVerified = true;
+              }
+
+              // override the cleartext password in the user with the hashed one
+              newUser.password = hash;
+
+              // if the email and the username are available, create a new user
+              // with the hashed password and save it
+              newUser
+                .save()
+                .then((user) => {
+                  generateNewToken(user);
+                })
+                .catch((err) => {
+                  res.status(400).json({
+                    message: "Error registering",
+                    err,
+                  });
+                });
+            }
+          );
+        });
       });
-    });
+    } else {
+      res.status(400).send({
+        message: "Phone number must include a country code.",
+      });
+    }
   };
 
   // generate and json token and send it with the user
@@ -108,7 +139,7 @@ exports.createUser = (req, res) => {
         isSeller: user.isSeller,
         isCustomer: user.isCustomer,
         isShipper: user.isShipper,
-        isRestricted: user.isRestricted
+        isRestricted: user.isRestricted,
       },
       jwtSecret,
       { expiresIn: 3600 },
@@ -134,11 +165,76 @@ exports.createUser = (req, res) => {
               isShipper: user.isShipper,
               isRestricted: user.isRestricted,
               cart: user.cart,
-              wishList: user.cart
-            }
+              wishList: user.cart,
+              phoneNumberIsVerified: user.phoneNumberIsVerified,
+              emailIsVerified: user.emailIsVerified,
+              profilePicture: user.profilePicture,
+              zipCode: user.zipCode,
+              countryCode: user.countryCode,
+              city: user.city,
+              address: user.address,
+              phoneNumber: user.phoneNumber,
+            },
           });
       }
     );
+  }
+};
+
+exports.requestPhoneNumberVerification = (req, res) => {
+  const { phoneNumber } = req.body;
+  if (!phoneNumber) {
+    return res.status(400).json({ message: "Phone number is required" });
+  }
+  try {
+    HTTPService.post(`${termiiBaseUrl}/sms/otp/send`, {
+      api_key: termiiApiKey,
+      message_type: "NUMERIC",
+      to: phoneNumberHasCountryCode(phoneNumber),
+      from: "Approved Sender ID or Configuration ID",
+      channel: "dnd",
+      pin_attempts: 5,
+      pin_time_to_live: 5,
+      pin_length: 4,
+      pin_placeholder: "< 1234 >",
+      message_text: "Your pin is < 1234 >",
+      pin_type: "NUMERIC",
+    }).then((response) => {
+      const otp = new OtpModel({
+        otp_id: response.pinId,
+        phone_number: phoneNumber,
+        type: "phone_number",
+      });
+      otp.save().then(() => {
+        res.status(200).json({ message: "OTP sent" });
+      });
+    });
+  } catch (error) {
+    return res.status(400).json({ message: "Couldn't send OTP" });
+  }
+};
+
+exports.verifyPhoneNumber = (req, res) => {
+  const { otp, otp_id, phoneNumber } = req.body;
+  try {
+    OtpModel.find({ otp_id, phone_number: phoneNumber }).then(() => {
+      HTTPService.post(`${termiiBaseUrl}/sms/otp/verify`, {
+        api_key: termiiApiKey,
+        pin: otp,
+        pin_id: otp_id,
+      }).then(async (response) => {
+        if (response.verified) {
+          await OtpModel.findOneAndUpdate(
+            { otp_id, phone_number: phoneNumber },
+            { isVerified: true }
+          );
+
+          res.status(200).json({ message: "Phone number verified" });
+        }
+      });
+    });
+  } catch (error) {
+    return res.status(400).json({ message: "Invalid OTP" });
   }
 };
 
@@ -158,11 +254,11 @@ exports.login = (req, res) => {
 
     // compare the encrypted password with one the user provided
     function comparePassword(user) {
-      bcrypt.compare(req.body.password, user.password).then(isMatch => {
+      bcrypt.compare(req.body.password, user.password).then((isMatch) => {
         // if the password doesn't match, return a message
         if (!isMatch) {
           return res.status(400).json({
-            message: "Invalid password"
+            message: "Invalid password",
           });
           // if it matches generate a new token and send everything is json
         } else {
@@ -180,7 +276,7 @@ exports.login = (req, res) => {
           isSeller: user.isSeller,
           isCustomer: user.isCustomer,
           isShipper: user.isShipper,
-          isRestricted: user.isRestricted
+          isRestricted: user.isRestricted,
         },
         jwtSecret,
         { expiresIn: 3600 },
@@ -204,8 +300,8 @@ exports.login = (req, res) => {
                 isSeller: user.isSeller,
                 isCustomer: user.isCustomer,
                 isShipper: user.isShipper,
-                isRestricted: user.isRestricted
-              }
+                isRestricted: user.isRestricted,
+              },
             });
           }
         }
@@ -218,7 +314,7 @@ exports.login = (req, res) => {
 exports.getUser = (req, res) => {
   User.findById(req.user.id)
     .select("-password")
-    .then(user => res.json(user));
+    .then((user) => res.json(user));
 };
 
 // handle PUT at api/users/edit_account to edit user data
@@ -230,15 +326,19 @@ exports.editUser = (req, res) => {
       //create user with the new data
       let updatedUser = {
         password: req.body.password ? req.body.password : userToUpdate.password,
-        firstName: req.body.firstName ? req.body.firstName : userToUpdate.firstName,
+        firstName: req.body.firstName
+          ? req.body.firstName
+          : userToUpdate.firstName,
         lastName: req.body.lastName ? req.body.lastName : userToUpdate.lastName,
         email: req.body.email ? req.body.email : userToUpdate.email,
         gender: req.body.gender ? req.body.gender : userToUpdate.gender,
         nationality: req.body.nationality
           ? req.body.nationality
           : userToUpdate.nationality,
-        birthDate: req.body.birthDate ? req.body.birthDate : userToUpdate.birthDate,
-        isSeller: req.body.isSeller ? req.body.isSeller : userToUpdate.isSeller
+        birthDate: req.body.birthDate
+          ? req.body.birthDate
+          : userToUpdate.birthDate,
+        isSeller: req.body.isSeller ? req.body.isSeller : userToUpdate.isSeller,
       };
 
       // get the old email and check if it's the same as the user provided
@@ -248,74 +348,35 @@ exports.editUser = (req, res) => {
       if (userToUpdate.email === req.body.email) {
         // check if the Username is already taken in case we want to edit it
         // throw a message to the user if so
-        User.findOne({ username: req.body.username }, (err, userWithSameUsername) => {
-          if (err) {
-            res.status(400).json({
-              message: "Error getting username"
-            });
-          } else if (userWithSameUsername) {
-            res.status(400).json({
-              message: "Username is taken"
-            });
-          } else {
-            //check is the 2 passwords match
-            if (req.body.password !== req.body.verifyPassword) {
-              return res.status(400).json({ message: "Password doesn't match" });
-            }
-            // generate a hashed password
-            bcrypt.genSalt(10, (err, salt) => {
-              if (err) throw err;
-              // if the user doesn't change the password we keep updating without touching the password
-              if (req.body.password === "") {
-                User.findByIdAndUpdate(req.user.id, updatedUser, {
-                  new: true,
-                  useFindAndModify: false
-                })
-                  .select("-password")
-                  .then(user => {
-                    // in case the user switched the account to a seller account
-                    // we need to generate a new token with the new seller auth
-                    jwt.sign(
-                      {
-                        id: user.id,
-                        isAdmin: user.isAdmin,
-                        isSeller: user.isSeller,
-                        isCustomer: user.isCustomer,
-                        isShipper: user.isShipper,
-                        isRestricted: user.isRestricted
-                      },
-                      jwtSecret,
-                      { expiresIn: 3600 },
-                      (err, token) => {
-                        if (err) throw err;
-                        res.status(200).json({
-                          token,
-                          message: "Account settings updated",
-                          user
-                        });
-                      }
-                    );
-                  })
-                  .catch(err => {
-                    res.status(400).json({
-                      message: "Couldn't update",
-                      err
-                    });
-                  });
-                // if the user changes the password we hash the new password
-                // and change its value in the new user object with data
-              } else {
-                bcrypt.hash(updatedUser.password, salt, (err, hash) => {
-                  if (err) throw err;
-
-                  updatedUser.password = hash;
-
+        User.findOne(
+          { username: req.body.username },
+          (err, userWithSameUsername) => {
+            if (err) {
+              res.status(400).json({
+                message: "Error getting username",
+              });
+            } else if (userWithSameUsername) {
+              res.status(400).json({
+                message: "Username is taken",
+              });
+            } else {
+              //check is the 2 passwords match
+              if (req.body.password !== req.body.verifyPassword) {
+                return res
+                  .status(400)
+                  .json({ message: "Password doesn't match" });
+              }
+              // generate a hashed password
+              bcrypt.genSalt(10, (err, salt) => {
+                if (err) throw err;
+                // if the user doesn't change the password we keep updating without touching the password
+                if (req.body.password === "") {
                   User.findByIdAndUpdate(req.user.id, updatedUser, {
                     new: true,
-                    useFindAndModify: false
+                    useFindAndModify: false,
                   })
                     .select("-password")
-                    .then(user => {
+                    .then((user) => {
                       // in case the user switched the account to a seller account
                       // we need to generate a new token with the new seller auth
                       jwt.sign(
@@ -325,7 +386,7 @@ exports.editUser = (req, res) => {
                           isSeller: user.isSeller,
                           isCustomer: user.isCustomer,
                           isShipper: user.isShipper,
-                          isRestricted: user.isRestricted
+                          isRestricted: user.isRestricted,
                         },
                         jwtSecret,
                         { expiresIn: 3600 },
@@ -334,22 +395,66 @@ exports.editUser = (req, res) => {
                           res.status(200).json({
                             token,
                             message: "Account settings updated",
-                            user
+                            user,
                           });
                         }
                       );
                     })
-                    .catch(err => {
+                    .catch((err) => {
                       res.status(400).json({
                         message: "Couldn't update",
-                        err
+                        err,
                       });
                     });
-                });
-              }
-            });
+                  // if the user changes the password we hash the new password
+                  // and change its value in the new user object with data
+                } else {
+                  bcrypt.hash(updatedUser.password, salt, (err, hash) => {
+                    if (err) throw err;
+
+                    updatedUser.password = hash;
+
+                    User.findByIdAndUpdate(req.user.id, updatedUser, {
+                      new: true,
+                      useFindAndModify: false,
+                    })
+                      .select("-password")
+                      .then((user) => {
+                        // in case the user switched the account to a seller account
+                        // we need to generate a new token with the new seller auth
+                        jwt.sign(
+                          {
+                            id: user.id,
+                            isAdmin: user.isAdmin,
+                            isSeller: user.isSeller,
+                            isCustomer: user.isCustomer,
+                            isShipper: user.isShipper,
+                            isRestricted: user.isRestricted,
+                          },
+                          jwtSecret,
+                          { expiresIn: 3600 },
+                          (err, token) => {
+                            if (err) throw err;
+                            res.status(200).json({
+                              token,
+                              message: "Account settings updated",
+                              user,
+                            });
+                          }
+                        );
+                      })
+                      .catch((err) => {
+                        res.status(400).json({
+                          message: "Couldn't update",
+                          err,
+                        });
+                      });
+                  });
+                }
+              });
+            }
           }
-        });
+        );
       } else {
         //check if the 2 passwords match
         if (req.body.password !== req.body.verifyPassword) {
@@ -361,75 +466,34 @@ exports.editUser = (req, res) => {
         User.findOne({ email: req.body.email }, (err, userWithSameEmail) => {
           if (err) {
             res.status(400).json({
-              message: "Error getting email try gain"
+              message: "Error getting email try gain",
             });
           } else if (userWithSameEmail) {
             res.status(400).json({ message: "This email is taken" });
           } else {
             // check if the Username is already taken in case we want to edit it
             // throw a message to the user if so
-            User.findOne({ username: req.body.username }, (err, userWithSameUsername) => {
-              if (err) {
-                res.status(400).json({
-                  message: "Error getting username"
-                });
-              } else if (userWithSameUsername) {
-                res.status(400).json({ message: "Username is taken" });
-              } else {
-                bcrypt.genSalt(10, (err, salt) => {
-                  if (err) throw err;
+            User.findOne(
+              { username: req.body.username },
+              (err, userWithSameUsername) => {
+                if (err) {
+                  res.status(400).json({
+                    message: "Error getting username",
+                  });
+                } else if (userWithSameUsername) {
+                  res.status(400).json({ message: "Username is taken" });
+                } else {
+                  bcrypt.genSalt(10, (err, salt) => {
+                    if (err) throw err;
 
-                  // if the user doesn't change the password we jeep updating without touching the password
-                  if (req.body.password === "") {
-                    User.findByIdAndUpdate(req.user.id, updatedUser, {
-                      new: true,
-                      useFindAndModify: false
-                    })
-                      .select("-password")
-                      .then(user => {
-                        // in case the user switched the account to a seller account
-                        // we need to generate a new token with the new seller auth
-                        jwt.sign(
-                          {
-                            id: user.id,
-                            isAdmin: user.isAdmin,
-                            isSeller: user.isSeller,
-                            isCustomer: user.isCustomer,
-                            isShipper: user.isShipper,
-                            isRestricted: user.isRestricted
-                          },
-                          jwtSecret,
-                          { expiresIn: 3600 },
-                          (err, token) => {
-                            if (err) throw err;
-                            res.status(200).json({
-                              token,
-                              message: "Account settings updated",
-                              user
-                            });
-                          }
-                        );
-                      })
-                      .catch(err => {
-                        res.status(400).json({
-                          message: "Couldn't update",
-                          err
-                        });
-                      });
-                    // if the user changes the password we hash the new password
-                    // and change its value in the new user object with data
-                  } else {
-                    bcrypt.hash(updatedUser.password, salt, (err, hash) => {
-                      if (err) throw err;
-
-                      updatedUser.password = hash;
-
+                    // if the user doesn't change the password we jeep updating without touching the password
+                    if (req.body.password === "") {
                       User.findByIdAndUpdate(req.user.id, updatedUser, {
                         new: true,
-                        useFindAndModify: false
+                        useFindAndModify: false,
                       })
                         .select("-password")
-                        .then(user => {
+                        .then((user) => {
                           // in case the user switched the account to a seller account
                           // we need to generate a new token with the new seller auth
                           jwt.sign(
@@ -439,7 +503,7 @@ exports.editUser = (req, res) => {
                               isSeller: user.isSeller,
                               isCustomer: user.isCustomer,
                               isShipper: user.isShipper,
-                              isRestricted: user.isRestricted
+                              isRestricted: user.isRestricted,
                             },
                             jwtSecret,
                             { expiresIn: 3600 },
@@ -448,22 +512,66 @@ exports.editUser = (req, res) => {
                               res.status(200).json({
                                 token,
                                 message: "Account settings updated",
-                                user
+                                user,
                               });
                             }
                           );
                         })
-                        .catch(err => {
+                        .catch((err) => {
                           res.status(400).json({
                             message: "Couldn't update",
-                            err
+                            err,
                           });
                         });
-                    });
-                  }
-                });
+                      // if the user changes the password we hash the new password
+                      // and change its value in the new user object with data
+                    } else {
+                      bcrypt.hash(updatedUser.password, salt, (err, hash) => {
+                        if (err) throw err;
+
+                        updatedUser.password = hash;
+
+                        User.findByIdAndUpdate(req.user.id, updatedUser, {
+                          new: true,
+                          useFindAndModify: false,
+                        })
+                          .select("-password")
+                          .then((user) => {
+                            // in case the user switched the account to a seller account
+                            // we need to generate a new token with the new seller auth
+                            jwt.sign(
+                              {
+                                id: user.id,
+                                isAdmin: user.isAdmin,
+                                isSeller: user.isSeller,
+                                isCustomer: user.isCustomer,
+                                isShipper: user.isShipper,
+                                isRestricted: user.isRestricted,
+                              },
+                              jwtSecret,
+                              { expiresIn: 3600 },
+                              (err, token) => {
+                                if (err) throw err;
+                                res.status(200).json({
+                                  token,
+                                  message: "Account settings updated",
+                                  user,
+                                });
+                              }
+                            );
+                          })
+                          .catch((err) => {
+                            res.status(400).json({
+                              message: "Couldn't update",
+                              err,
+                            });
+                          });
+                      });
+                    }
+                  });
+                }
               }
-            });
+            );
           }
         });
       }

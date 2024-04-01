@@ -7,7 +7,29 @@ const users_validation = require("../../middlewares/validation/validateUser");
 // @route   POST api/users/signup
 // @desc    send user data for registeration
 // @access  public
-router.post("/signup", users_validation.validateRegister, users_controller.createUser);
+router.post(
+  "/signup",
+  users_validation.validateRegister,
+  users_controller.createUser
+);
+
+// @route   POST api/users/requestPhoneOtp
+// @desc    request for user phone number verification
+// @access  public
+router.post(
+  "/requestPhoneOtp",
+  users_validation.validatePhoneNumberRequest,
+  users_controller.requestPhoneNumberVerification
+);
+
+// @route   POST api/users/verifyPhoneNumber
+// @desc    verify user phone number
+// @access  public
+router.post(
+  "/verifyPhoneNumber",
+  users_validation.validatePhoneNumberRequest,
+  users_controller.verifyPhoneNumber
+);
 
 // @route   POST api/users/login
 // @desc    send user data for logging in

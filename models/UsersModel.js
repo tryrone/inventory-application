@@ -15,7 +15,15 @@ const UserSchema = new Schema({
   isSeller: { type: Boolean },
   isCustomer: { type: Boolean },
   isShipper: { type: Boolean },
-  isRestricted: { type: Boolean }
+  isRestricted: { type: Boolean },
+  phoneNumber: { type: Number, nullable: true },
+  address: { type: String, nullable: true },
+  city: { type: String, nullable: true },
+  countryCode: { type: String, nullable: true },
+  zipCode: { type: Number, nullable: true },
+  profilePicture: { type: String, nullable: true },
+  phoneNumberIsVerified: { type: Boolean, nullable: true },
+  emailIsVerified: { type: Boolean, nullable: true },
 });
 
 const Users = mongoose.model("User", UserSchema);

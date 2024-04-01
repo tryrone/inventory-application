@@ -4,29 +4,30 @@ const { body, validationResult } = require("express-validator");
 exports.validateRegister = [
   body("username")
     .isLength({
-      min: 2
+      min: 2,
     })
     .withMessage("must be at least 2 charachers")
     .trim()
     .escape(),
   body("password")
     .isLength({
-      min: 8
+      min: 8,
     })
     .withMessage("must be at least 8 characters")
     .trim()
     .escape(),
   body("firstName").isLength({
-    min: 2
+    min: 2,
   }),
   body("lastName")
     .isLength({
-      min: 2
+      min: 2,
     })
     .withMessage("must be at least 2 characters")
     .trim()
     .escape(),
   body("email").isEmail().withMessage("isn't vaild").trim().escape(),
+  body("phoneNumber").isMobilePhone().trim().escape(),
 
   // after we validate the inputs we check for errors
   //if there are any. just throw them to the user
@@ -43,26 +44,26 @@ exports.validateRegister = [
 
       res.status(400).json({
         message: errorMessage,
-        errors: errors
+        errors: errors,
       });
     } else {
       next();
     }
-  }
+  },
 ];
 
 // validate our user inputs for registration
 exports.validateLogin = [
   body("username")
     .isLength({
-      min: 2
+      min: 2,
     })
     .withMessage("must be at least 2 charachers")
     .trim()
     .escape(),
   body("password")
     .isLength({
-      min: 8
+      min: 8,
     })
     .withMessage("must be at least 8 characters")
     .trim()
@@ -83,12 +84,12 @@ exports.validateLogin = [
 
       res.status(400).json({
         message: errorMessage,
-        errors: errors
+        errors: errors,
       });
     } else {
       next();
     }
-  }
+  },
 ];
 
 // validate our user inputs for registration
@@ -97,14 +98,14 @@ exports.validateEditUser = [
   body("password").optional().trim().escape(),
   body("firstName")
     .isLength({
-      min: 2
+      min: 2,
     })
     .withMessage("must be at least 2 characters")
     .trim()
     .escape(),
   body("lastName")
     .isLength({
-      min: 2
+      min: 2,
     })
     .withMessage("must be at least 2 characters")
     .trim()
@@ -130,10 +131,68 @@ exports.validateEditUser = [
 
       res.status(400).json({
         message: errorMessage,
-        errors: errors
+        errors: errors,
       });
     } else {
       next();
     }
-  }
+  },
+];
+
+// validate our user otp validation request
+exports.validatePhoneNumberRequest = [
+  // validate our user inputs
+  body("otp"),
+  body("phoneNumber").isMobilePhone().trim().escape(),
+  body("otp_id").isNumeric().trim().escape(),
+
+  // after we validate the inputs we check for errors
+  //if there are any. just throw them to the user
+  // if no errors, call next, for the next middleware
+  (req, res, next) => {
+    const errors = validationResult(req);
+
+    // check if the validation passes, if not
+    // return a json respond with an error message
+    if (!errors.isEmpty()) {
+      let field = errors.errors[0].param;
+      let message = errors.errors[0].msg;
+      let errorMessage = field + " " + message;
+
+      res.status(400).json({
+        message: errorMessage,
+        errors: errors,
+      });
+    } else {
+      next();
+    }
+  },
+];
+
+// validate our request for otp
+exports.validatePhoneNumberRequest = [
+  // validate our user inputs
+  body("phoneNumber").isMobilePhone().trim().escape(),
+
+  // after we validate the inputs we check for errors
+  //if there are any. just throw them to the user
+  // if no errors, call next, for the next middleware
+  (req, res, next) => {
+    const errors = validationResult(req);
+
+    // check if the validation passes, if not
+    // return a json respond with an error message
+    if (!errors.isEmpty()) {
+      let field = errors.errors[0].param;
+      let message = errors.errors[0].msg;
+      let errorMessage = field + " " + message;
+
+      res.status(400).json({
+        message: errorMessage,
+        errors: errors,
+      });
+    } else {
+      next();
+    }
+  },
 ];
